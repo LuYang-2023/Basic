@@ -1,0 +1,25 @@
+certifi @ file:///croot/certifi_1707229174982/work/certifi
+charset-normalizer @ file:///tmp/build/80754af9/charset-normalizer_1630003229654/work
+# Editable install with no version control (DCNv2==0.1)
+-e /home/l/ws_Ai/EditCode/DL_learn/BasicIRSTD-main/BasicIRSTD-main/model/ISNet/DCNv2
+filelock @ file:///croot/filelock_1700591183607/work
+gmpy2 @ file:///tmp/build/80754af9/gmpy2_1645455533097/work
+idna @ file:///croot/idna_1714398848350/work
+Jinja2 @ file:///croot/jinja2_1706733616596/work
+MarkupSafe @ file:///croot/markupsafe_1704205993651/work
+mkl-fft @ file:///croot/mkl_fft_1695058164594/work
+mkl-random @ file:///croot/mkl_random_1695059800811/work
+mkl-service==2.4.0
+mpmath @ file:///croot/mpmath_1690848262763/work
+networkx @ file:///croot/networkx_1690561992265/work
+numpy @ file:///croot/numpy_and_numpy_base_1708638617955/work/dist/numpy-1.26.4-cp310-cp310-linux_x86_64.whl#sha256=d8cd837ed43e87f77e6efaa08e8de927ca030a1c9c5d04624432d6fb9a74a5ee
+pillow @ file:///croot/pillow_1714398848491/work
+PyYAML @ file:///croot/pyyaml_1698096049011/work
+requests @ file:///croot/requests_1707355572290/work
+sympy @ file:///croot/sympy_1701397643339/work
+torch==2.3.0
+torchaudio==2.3.0
+torchvision==0.18.0
+triton==2.3.0
+typing_extensions @ file:///croot/typing_extensions_1705599297034/work
+urllib3 @ file:///croot/urllib3_1700840488771/work
