@@ -1,0 +1,683 @@
+<html>
+<head>
+<title>SCTransNet.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #8c8c8c; font-style: italic;}
+.s1 { color: #080808;}
+.s2 { color: #0033b3;}
+.s3 { color: #1750eb;}
+.s4 { color: #067d17;}
+.s5 { color: #0037a6;}
+</style>
+</head>
+<body bgcolor="#ffffff">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#c0c0c0" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+SCTransNet.py</font>
+</center></td></tr></table>
+<pre><span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s0"># -*- coding: utf-8 -*-</span>
+<span class="s0"># @Author  : Shuai Yuan</span>
+<span class="s0"># @File    : SCTransNet.py</span>
+<span class="s0"># @Software: PyCharm</span>
+<span class="s0"># coding=utf-8</span>
+<span class="s2">from </span><span class="s1">__future__ </span><span class="s2">import </span><span class="s1">absolute_import</span>
+<span class="s2">from </span><span class="s1">__future__ </span><span class="s2">import </span><span class="s1">division</span>
+<span class="s2">from </span><span class="s1">__future__ </span><span class="s2">import </span><span class="s1">print_function</span>
+<span class="s2">import </span><span class="s1">copy</span>
+<span class="s2">import </span><span class="s1">math</span>
+<span class="s2">from </span><span class="s1">torch.nn </span><span class="s2">import </span><span class="s1">Dropout, Softmax, Conv2d, LayerNorm</span>
+<span class="s2">from </span><span class="s1">torch.nn.modules.utils </span><span class="s2">import </span><span class="s1">_pair</span>
+<span class="s2">import </span><span class="s1">torch.nn </span><span class="s2">as </span><span class="s1">nn</span>
+<span class="s2">import </span><span class="s1">torch</span>
+<span class="s2">import </span><span class="s1">torch.nn.functional </span><span class="s2">as </span><span class="s1">F</span>
+<span class="s2">import </span><span class="s1">ml_collections</span>
+<span class="s2">from </span><span class="s1">einops </span><span class="s2">import </span><span class="s1">rearrange</span>
+<span class="s2">import </span><span class="s1">numbers</span>
+<span class="s2">from </span><span class="s1">thop </span><span class="s2">import </span><span class="s1">profile</span>
+
+<span class="s2">def </span><span class="s1">get_CTranS_config():</span>
+    <span class="s1">config = ml_collections.ConfigDict()</span>
+    <span class="s1">config.transformer = ml_collections.ConfigDict()</span>
+    <span class="s1">config.KV_size = </span><span class="s3">480  </span><span class="s0"># KV_size = Q1 + Q2 + Q3 + Q4</span>
+    <span class="s1">config.transformer.num_heads = </span><span class="s3">4</span>
+    <span class="s1">config.transformer.num_layers = </span><span class="s3">4</span>
+    <span class="s1">config.patch_sizes = [</span><span class="s3">16</span><span class="s1">, </span><span class="s3">8</span><span class="s1">, </span><span class="s3">4</span><span class="s1">, </span><span class="s3">2</span><span class="s1">]</span>
+    <span class="s1">config.base_channel = </span><span class="s3">32  </span><span class="s0"># base channel of U-Net</span>
+    <span class="s1">config.n_classes = </span><span class="s3">1</span>
+
+    <span class="s0"># ********** useless **********</span>
+    <span class="s1">config.transformer.embeddings_dropout_rate = </span><span class="s3">0.1</span>
+    <span class="s1">config.transformer.attention_dropout_rate = </span><span class="s3">0.1</span>
+    <span class="s1">config.transformer.dropout_rate = </span><span class="s3">0</span>
+    <span class="s2">return </span><span class="s1">config</span>
+
+
+<span class="s2">class </span><span class="s1">Channel_Embeddings(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, config, patchsize, img_size, in_channels):</span>
+        <span class="s1">super().__init__()</span>
+        <span class="s1">img_size = _pair(img_size)</span>
+        <span class="s1">patch_size = _pair(patchsize)</span>
+        <span class="s1">n_patches = (img_size[</span><span class="s3">0</span><span class="s1">] // patch_size[</span><span class="s3">0</span><span class="s1">]) * (img_size[</span><span class="s3">1</span><span class="s1">] // patch_size[</span><span class="s3">1</span><span class="s1">])  </span><span class="s0"># 14 * 14 = 196</span>
+
+        <span class="s1">self.patch_embeddings = Conv2d(in_channels=in_channels,</span>
+                                       <span class="s1">out_channels=in_channels,</span>
+                                       <span class="s1">kernel_size=patch_size,</span>
+                                       <span class="s1">stride=patch_size)</span>
+        <span class="s1">self.position_embeddings = nn.Parameter(torch.zeros(</span><span class="s3">1</span><span class="s1">, n_patches, in_channels))</span>
+        <span class="s1">self.dropout = Dropout(config.transformer[</span><span class="s4">&quot;embeddings_dropout_rate&quot;</span><span class="s1">])</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, x):</span>
+        <span class="s2">if </span><span class="s1">x </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return None</span>
+        <span class="s1">x = self.patch_embeddings(x)</span>
+        <span class="s2">return </span><span class="s1">x</span>
+
+
+<span class="s2">class </span><span class="s1">Reconstruct(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, in_channels, out_channels, kernel_size, scale_factor):</span>
+        <span class="s1">super(Reconstruct, self).__init__()</span>
+        <span class="s2">if </span><span class="s1">kernel_size == </span><span class="s3">3</span><span class="s1">:</span>
+            <span class="s1">padding = </span><span class="s3">1</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">padding = </span><span class="s3">0</span>
+        <span class="s1">self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding)</span>
+        <span class="s1">self.norm = nn.BatchNorm2d(out_channels)</span>
+        <span class="s1">self.activation = nn.ReLU(inplace=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.scale_factor = scale_factor</span>
+
+    <span class="s0"># def forward(self, x, h, w):</span>
+    <span class="s2">def </span><span class="s1">forward(self, x):</span>
+        <span class="s2">if </span><span class="s1">x </span><span class="s2">is None</span><span class="s1">:</span>
+            <span class="s2">return None</span>
+
+        <span class="s1">x = nn.Upsample(scale_factor=self.scale_factor, mode=</span><span class="s4">'bilinear'</span><span class="s1">)(x)</span>
+
+        <span class="s1">out = self.conv(x)</span>
+        <span class="s1">out = self.norm(out)</span>
+        <span class="s1">out = self.activation(out)</span>
+        <span class="s2">return </span><span class="s1">out</span>
+
+
+<span class="s0"># spatial-embedded Single-head Channel-cross Attention (SSCA)</span>
+<span class="s2">class </span><span class="s1">Attention_org(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, config, vis, channel_num):</span>
+        <span class="s1">super(Attention_org, self).__init__()</span>
+        <span class="s1">self.vis = vis</span>
+        <span class="s1">self.KV_size = config.KV_size</span>
+        <span class="s1">self.channel_num = channel_num</span>
+        <span class="s1">self.num_attention_heads = </span><span class="s3">1</span>
+        <span class="s1">self.psi = nn.InstanceNorm2d(self.num_attention_heads)</span>
+        <span class="s1">self.softmax = Softmax(dim=</span><span class="s3">3</span><span class="s1">)</span>
+
+        <span class="s0"># self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))</span>
+        <span class="s1">self.mhead1 = nn.Conv2d(channel_num[</span><span class="s3">0</span><span class="s1">], channel_num[</span><span class="s3">0</span><span class="s1">] * self.num_attention_heads, kernel_size=</span><span class="s3">1</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.mhead2 = nn.Conv2d(channel_num[</span><span class="s3">1</span><span class="s1">], channel_num[</span><span class="s3">1</span><span class="s1">] * self.num_attention_heads, kernel_size=</span><span class="s3">1</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.mhead3 = nn.Conv2d(channel_num[</span><span class="s3">2</span><span class="s1">], channel_num[</span><span class="s3">2</span><span class="s1">] * self.num_attention_heads, kernel_size=</span><span class="s3">1</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.mhead4 = nn.Conv2d(channel_num[</span><span class="s3">3</span><span class="s1">], channel_num[</span><span class="s3">3</span><span class="s1">] * self.num_attention_heads, kernel_size=</span><span class="s3">1</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.mheadk = nn.Conv2d(self.KV_size, self.KV_size * self.num_attention_heads, kernel_size=</span><span class="s3">1</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.mheadv = nn.Conv2d(self.KV_size, self.KV_size * self.num_attention_heads, kernel_size=</span><span class="s3">1</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+
+        <span class="s1">self.q1 = nn.Conv2d(channel_num[</span><span class="s3">0</span><span class="s1">] * self.num_attention_heads, channel_num[</span><span class="s3">0</span><span class="s1">] * self.num_attention_heads, kernel_size=</span><span class="s3">3</span><span class="s1">, stride=</span><span class="s3">1</span><span class="s1">,</span>
+                            <span class="s1">padding=</span><span class="s3">1</span><span class="s1">,</span>
+                            <span class="s1">groups=channel_num[</span><span class="s3">0</span><span class="s1">] * self.num_attention_heads // </span><span class="s3">2</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.q2 = nn.Conv2d(channel_num[</span><span class="s3">1</span><span class="s1">] * self.num_attention_heads, channel_num[</span><span class="s3">1</span><span class="s1">] * self.num_attention_heads, kernel_size=</span><span class="s3">3</span><span class="s1">, stride=</span><span class="s3">1</span><span class="s1">,</span>
+                            <span class="s1">padding=</span><span class="s3">1</span><span class="s1">,</span>
+                            <span class="s1">groups=channel_num[</span><span class="s3">1</span><span class="s1">] * self.num_attention_heads // </span><span class="s3">2</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.q3 = nn.Conv2d(channel_num[</span><span class="s3">2</span><span class="s1">] * self.num_attention_heads, channel_num[</span><span class="s3">2</span><span class="s1">] * self.num_attention_heads, kernel_size=</span><span class="s3">3</span><span class="s1">, stride=</span><span class="s3">1</span><span class="s1">,</span>
+                            <span class="s1">padding=</span><span class="s3">1</span><span class="s1">,</span>
+                            <span class="s1">groups=channel_num[</span><span class="s3">2</span><span class="s1">] * self.num_attention_heads // </span><span class="s3">2</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.q4 = nn.Conv2d(channel_num[</span><span class="s3">3</span><span class="s1">] * self.num_attention_heads, channel_num[</span><span class="s3">3</span><span class="s1">] * self.num_attention_heads, kernel_size=</span><span class="s3">3</span><span class="s1">, stride=</span><span class="s3">1</span><span class="s1">,</span>
+                            <span class="s1">padding=</span><span class="s3">1</span><span class="s1">,</span>
+                            <span class="s1">groups=channel_num[</span><span class="s3">3</span><span class="s1">] * self.num_attention_heads // </span><span class="s3">2</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.k = nn.Conv2d(self.KV_size * self.num_attention_heads, self.KV_size * self.num_attention_heads, kernel_size=</span><span class="s3">3</span><span class="s1">, stride=</span><span class="s3">1</span><span class="s1">,</span>
+                           <span class="s1">padding=</span><span class="s3">1</span><span class="s1">, groups=self.KV_size * self.num_attention_heads, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.v = nn.Conv2d(self.KV_size * self.num_attention_heads, self.KV_size * self.num_attention_heads, kernel_size=</span><span class="s3">3</span><span class="s1">, stride=</span><span class="s3">1</span><span class="s1">,</span>
+                           <span class="s1">padding=</span><span class="s3">1</span><span class="s1">, groups=self.KV_size * self.num_attention_heads, bias=</span><span class="s2">False</span><span class="s1">)</span>
+
+        <span class="s1">self.project_out1 = nn.Conv2d(channel_num[</span><span class="s3">0</span><span class="s1">], channel_num[</span><span class="s3">0</span><span class="s1">], kernel_size=</span><span class="s3">1</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.project_out2 = nn.Conv2d(channel_num[</span><span class="s3">1</span><span class="s1">], channel_num[</span><span class="s3">1</span><span class="s1">], kernel_size=</span><span class="s3">1</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.project_out3 = nn.Conv2d(channel_num[</span><span class="s3">2</span><span class="s1">], channel_num[</span><span class="s3">2</span><span class="s1">], kernel_size=</span><span class="s3">1</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.project_out4 = nn.Conv2d(channel_num[</span><span class="s3">3</span><span class="s1">], channel_num[</span><span class="s3">3</span><span class="s1">], kernel_size=</span><span class="s3">1</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+
+
+        <span class="s0"># ****************** useless ***************************************</span>
+        <span class="s1">self.q1_attn1 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.q1_attn2 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.q1_attn3 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.q1_attn4 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+
+        <span class="s1">self.q2_attn1 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.q2_attn2 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.q2_attn3 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.q2_attn4 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+
+        <span class="s1">self.q3_attn1 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.q3_attn2 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.q3_attn3 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.q3_attn4 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+
+        <span class="s1">self.q4_attn1 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.q4_attn2 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.q4_attn3 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.q4_attn4 = torch.nn.Parameter(torch.tensor([</span><span class="s3">0.2</span><span class="s1">]), requires_grad=</span><span class="s2">True</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, emb1, emb2, emb3, emb4, emb_all):</span>
+        <span class="s1">b, c, h, w = emb1.shape</span>
+        <span class="s1">q1 = self.q1(self.mhead1(emb1))</span>
+        <span class="s1">q2 = self.q2(self.mhead2(emb2))</span>
+        <span class="s1">q3 = self.q3(self.mhead3(emb3))</span>
+        <span class="s1">q4 = self.q4(self.mhead4(emb4))</span>
+        <span class="s1">k = self.k(self.mheadk(emb_all))</span>
+        <span class="s1">v = self.v(self.mheadv(emb_all))</span>
+        <span class="s0"># k, v = kv.chunk(2, dim=1)</span>
+
+        <span class="s1">q1 = rearrange(q1, </span><span class="s4">'b (head c) h w -&gt; b head c (h w)'</span><span class="s1">, head=self.num_attention_heads)</span>
+        <span class="s1">q2 = rearrange(q2, </span><span class="s4">'b (head c) h w -&gt; b head c (h w)'</span><span class="s1">, head=self.num_attention_heads)</span>
+        <span class="s1">q3 = rearrange(q3, </span><span class="s4">'b (head c) h w -&gt; b head c (h w)'</span><span class="s1">, head=self.num_attention_heads)</span>
+        <span class="s1">q4 = rearrange(q4, </span><span class="s4">'b (head c) h w -&gt; b head c (h w)'</span><span class="s1">, head=self.num_attention_heads)</span>
+        <span class="s1">k = rearrange(k, </span><span class="s4">'b (head c) h w -&gt; b head c (h w)'</span><span class="s1">, head=self.num_attention_heads)</span>
+        <span class="s1">v = rearrange(v, </span><span class="s4">'b (head c) h w -&gt; b head c (h w)'</span><span class="s1">, head=self.num_attention_heads)</span>
+
+        <span class="s1">q1 = torch.nn.functional.normalize(q1, dim=-</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">q2 = torch.nn.functional.normalize(q2, dim=-</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">q3 = torch.nn.functional.normalize(q3, dim=-</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">q4 = torch.nn.functional.normalize(q4, dim=-</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">k = torch.nn.functional.normalize(k, dim=-</span><span class="s3">1</span><span class="s1">)</span>
+
+        <span class="s1">_, _, c1, _ = q1.shape</span>
+        <span class="s1">_, _, c2, _ = q2.shape</span>
+        <span class="s1">_, _, c3, _ = q3.shape</span>
+        <span class="s1">_, _, c4, _ = q4.shape</span>
+        <span class="s1">_, _, c, _ = k.shape</span>
+
+        <span class="s1">attn1 = (q1 @ k.transpose(-</span><span class="s3">2</span><span class="s1">, -</span><span class="s3">1</span><span class="s1">)) / math.sqrt(self.KV_size)</span>
+        <span class="s1">attn2 = (q2 @ k.transpose(-</span><span class="s3">2</span><span class="s1">, -</span><span class="s3">1</span><span class="s1">)) / math.sqrt(self.KV_size)</span>
+        <span class="s1">attn3 = (q3 @ k.transpose(-</span><span class="s3">2</span><span class="s1">, -</span><span class="s3">1</span><span class="s1">)) / math.sqrt(self.KV_size)</span>
+        <span class="s1">attn4 = (q4 @ k.transpose(-</span><span class="s3">2</span><span class="s1">, -</span><span class="s3">1</span><span class="s1">)) / math.sqrt(self.KV_size)</span>
+
+        <span class="s1">attention_probs1 = self.softmax(self.psi(attn1))</span>
+        <span class="s1">attention_probs2 = self.softmax(self.psi(attn2))</span>
+        <span class="s1">attention_probs3 = self.softmax(self.psi(attn3))</span>
+        <span class="s1">attention_probs4 = self.softmax(self.psi(attn4))</span>
+
+        <span class="s1">out1 = (attention_probs1 @ v)</span>
+        <span class="s1">out2 = (attention_probs2 @ v)</span>
+        <span class="s1">out3 = (attention_probs3 @ v)</span>
+        <span class="s1">out4 = (attention_probs4 @ v)</span>
+
+        <span class="s1">out_1 = out1.mean(dim=</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">out_2 = out2.mean(dim=</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">out_3 = out3.mean(dim=</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">out_4 = out4.mean(dim=</span><span class="s3">1</span><span class="s1">)</span>
+
+        <span class="s1">out_1 = rearrange(out_1, </span><span class="s4">'b  c (h w) -&gt; b c h w'</span><span class="s1">, h=h, w=w)</span>
+        <span class="s1">out_2 = rearrange(out_2, </span><span class="s4">'b  c (h w) -&gt; b c h w'</span><span class="s1">, h=h, w=w)</span>
+        <span class="s1">out_3 = rearrange(out_3, </span><span class="s4">'b  c (h w) -&gt; b c h w'</span><span class="s1">, h=h, w=w)</span>
+        <span class="s1">out_4 = rearrange(out_4, </span><span class="s4">'b  c (h w) -&gt; b c h w'</span><span class="s1">, h=h, w=w)</span>
+
+        <span class="s1">O1 = self.project_out1(out_1)</span>
+        <span class="s1">O2 = self.project_out2(out_2)</span>
+        <span class="s1">O3 = self.project_out3(out_3)</span>
+        <span class="s1">O4 = self.project_out4(out_4)</span>
+        <span class="s1">weights = </span><span class="s2">None</span>
+
+        <span class="s2">return </span><span class="s1">O1, O2, O3, O4, weights</span>
+
+
+<span class="s2">def </span><span class="s1">to_3d(x):</span>
+    <span class="s2">return </span><span class="s1">rearrange(x, </span><span class="s4">'b c h w -&gt; b (h w) c'</span><span class="s1">)</span>
+
+
+<span class="s2">def </span><span class="s1">to_4d(x, h, w):</span>
+    <span class="s2">return </span><span class="s1">rearrange(x, </span><span class="s4">'b (h w) c -&gt; b c h w'</span><span class="s1">, h=h, w=w)</span>
+
+
+<span class="s2">class </span><span class="s1">BiasFree_LayerNorm(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, normalized_shape):</span>
+        <span class="s1">super(BiasFree_LayerNorm, self).__init__()</span>
+        <span class="s2">if </span><span class="s1">isinstance(normalized_shape, numbers.Integral):</span>
+            <span class="s1">normalized_shape = (normalized_shape,)</span>
+        <span class="s1">normalized_shape = torch.Size(normalized_shape)</span>
+
+        <span class="s2">assert </span><span class="s1">len(normalized_shape) == </span><span class="s3">1</span>
+
+        <span class="s1">self.weight = nn.Parameter(torch.ones(normalized_shape))</span>
+        <span class="s1">self.normalized_shape = normalized_shape</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, x):</span>
+        <span class="s1">sigma = x.var(-</span><span class="s3">1</span><span class="s1">, keepdim=</span><span class="s2">True</span><span class="s1">, unbiased=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">x / torch.sqrt(sigma + </span><span class="s3">1e-5</span><span class="s1">) * self.weight</span>
+
+
+<span class="s2">class </span><span class="s1">WithBias_LayerNorm(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, normalized_shape):</span>
+        <span class="s1">super(WithBias_LayerNorm, self).__init__()</span>
+        <span class="s2">if </span><span class="s1">isinstance(normalized_shape, numbers.Integral):</span>
+            <span class="s1">normalized_shape = (normalized_shape,)</span>
+        <span class="s1">normalized_shape = torch.Size(normalized_shape)</span>
+
+        <span class="s2">assert </span><span class="s1">len(normalized_shape) == </span><span class="s3">1</span>
+
+        <span class="s1">self.weight = nn.Parameter(torch.ones(normalized_shape))</span>
+        <span class="s1">self.bias = nn.Parameter(torch.zeros(normalized_shape))</span>
+        <span class="s1">self.normalized_shape = normalized_shape</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, x):</span>
+        <span class="s1">mu = x.mean(-</span><span class="s3">1</span><span class="s1">, keepdim=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">sigma = x.var(-</span><span class="s3">1</span><span class="s1">, keepdim=</span><span class="s2">True</span><span class="s1">, unbiased=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">(x - mu) / torch.sqrt(sigma + </span><span class="s3">1e-5</span><span class="s1">) * self.weight + self.bias</span>
+
+
+<span class="s2">class </span><span class="s1">LayerNorm3d(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, dim, LayerNorm_type):</span>
+        <span class="s1">super(LayerNorm3d, self).__init__()</span>
+        <span class="s2">if </span><span class="s1">LayerNorm_type == </span><span class="s4">'BiasFree'</span><span class="s1">:</span>
+            <span class="s1">self.body = BiasFree_LayerNorm(dim)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self.body = WithBias_LayerNorm(dim)</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, x):</span>
+        <span class="s1">h, w = x.shape[-</span><span class="s3">2</span><span class="s1">:]</span>
+        <span class="s2">return </span><span class="s1">to_4d(self.body(to_3d(x)), h, w)</span>
+
+<span class="s2">class </span><span class="s1">eca_layer_2d(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, channel, k_size=</span><span class="s3">3</span><span class="s1">):</span>
+        <span class="s1">super(eca_layer_2d, self).__init__()</span>
+        <span class="s1">padding = k_size // </span><span class="s3">2</span>
+        <span class="s1">self.avg_pool = nn.AdaptiveAvgPool2d(output_size=</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">self.conv = nn.Sequential(</span>
+            <span class="s1">nn.Conv1d(in_channels=</span><span class="s3">1</span><span class="s1">, out_channels=</span><span class="s3">1</span><span class="s1">, kernel_size=k_size, padding=padding, bias=</span><span class="s2">False</span><span class="s1">),</span>
+            <span class="s1">nn.Sigmoid()</span>
+        <span class="s1">)</span>
+        <span class="s1">self.channel = channel</span>
+        <span class="s1">self.k_size = k_size</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, x):</span>
+        <span class="s1">out = self.avg_pool(x)</span>
+        <span class="s1">out = out.view(x.size(</span><span class="s3">0</span><span class="s1">), </span><span class="s3">1</span><span class="s1">, x.size(</span><span class="s3">1</span><span class="s1">))</span>
+        <span class="s1">out = self.conv(out)</span>
+        <span class="s1">out = out.view(x.size(</span><span class="s3">0</span><span class="s1">), x.size(</span><span class="s3">1</span><span class="s1">), </span><span class="s3">1</span><span class="s1">, </span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s2">return </span><span class="s1">out * x</span>
+
+<span class="s0"># Complementary Feed-forward Network (CFN)</span>
+<span class="s2">class </span><span class="s1">FeedForward(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, dim, ffn_expansion_factor, bias):</span>
+        <span class="s1">super(FeedForward, self).__init__()</span>
+
+        <span class="s1">hidden_features = int(dim * ffn_expansion_factor)</span>
+
+        <span class="s1">self.project_in = nn.Conv2d(dim, hidden_features * </span><span class="s3">2</span><span class="s1">, kernel_size=</span><span class="s3">1</span><span class="s1">, bias=bias)</span>
+
+        <span class="s1">self.dwconv3x3 = nn.Conv2d(hidden_features, hidden_features, kernel_size=</span><span class="s3">3</span><span class="s1">, stride=</span><span class="s3">1</span><span class="s1">, padding=</span><span class="s3">1</span><span class="s1">, groups=hidden_features,</span>
+                                   <span class="s1">bias=bias)</span>
+        <span class="s1">self.dwconv5x5 = nn.Conv2d(hidden_features, hidden_features, kernel_size=</span><span class="s3">5</span><span class="s1">, stride=</span><span class="s3">1</span><span class="s1">, padding=</span><span class="s3">2</span><span class="s1">, groups=hidden_features,</span>
+                                   <span class="s1">bias=bias)</span>
+        <span class="s1">self.relu3 = nn.ReLU()</span>
+        <span class="s1">self.relu5 = nn.ReLU()</span>
+        <span class="s1">self.project_out = nn.Conv2d(hidden_features * </span><span class="s3">2</span><span class="s1">, dim, kernel_size=</span><span class="s3">1</span><span class="s1">, bias=bias)</span>
+        <span class="s1">self.eca = eca_layer_2d(dim)</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, x):</span>
+        <span class="s1">x_3,x_5 = self.project_in(x).chunk(</span><span class="s3">2</span><span class="s1">, dim=</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">x1_3 = self.relu3(self.dwconv3x3(x_3))</span>
+        <span class="s1">x1_5 = self.relu5(self.dwconv5x5(x_5))</span>
+        <span class="s1">x = torch.cat([x1_3, x1_5], dim=</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">x = self.project_out(x)</span>
+        <span class="s1">x = self.eca(x)</span>
+        <span class="s2">return </span><span class="s1">x</span>
+
+
+<span class="s0">#  Spatial-channel Cross Transformer Block (SCTB)</span>
+<span class="s2">class </span><span class="s1">Block_ViT(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, config, vis, channel_num):</span>
+        <span class="s1">super(Block_ViT, self).__init__()</span>
+        <span class="s1">self.attn_norm1 = LayerNorm3d(channel_num[</span><span class="s3">0</span><span class="s1">], LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+        <span class="s1">self.attn_norm2 = LayerNorm3d(channel_num[</span><span class="s3">1</span><span class="s1">], LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+        <span class="s1">self.attn_norm3 = LayerNorm3d(channel_num[</span><span class="s3">2</span><span class="s1">], LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+        <span class="s1">self.attn_norm4 = LayerNorm3d(channel_num[</span><span class="s3">3</span><span class="s1">], LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+        <span class="s1">self.attn_norm = LayerNorm3d(config.KV_size, LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+
+        <span class="s1">self.channel_attn = Attention_org(config, vis, channel_num)</span>
+
+        <span class="s1">self.ffn_norm1 = LayerNorm3d(channel_num[</span><span class="s3">0</span><span class="s1">], LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+        <span class="s1">self.ffn_norm2 = LayerNorm3d(channel_num[</span><span class="s3">1</span><span class="s1">], LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+        <span class="s1">self.ffn_norm3 = LayerNorm3d(channel_num[</span><span class="s3">2</span><span class="s1">], LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+        <span class="s1">self.ffn_norm4 = LayerNorm3d(channel_num[</span><span class="s3">3</span><span class="s1">], LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+
+        <span class="s1">self.ffn1 = FeedForward(channel_num[</span><span class="s3">0</span><span class="s1">], ffn_expansion_factor=</span><span class="s3">2.66</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.ffn2 = FeedForward(channel_num[</span><span class="s3">1</span><span class="s1">], ffn_expansion_factor=</span><span class="s3">2.66</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.ffn3 = FeedForward(channel_num[</span><span class="s3">2</span><span class="s1">], ffn_expansion_factor=</span><span class="s3">2.66</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+        <span class="s1">self.ffn4 = FeedForward(channel_num[</span><span class="s3">3</span><span class="s1">], ffn_expansion_factor=</span><span class="s3">2.66</span><span class="s1">, bias=</span><span class="s2">False</span><span class="s1">)</span>
+
+
+    <span class="s2">def </span><span class="s1">forward(self, emb1, emb2, emb3, emb4):</span>
+        <span class="s1">embcat = []</span>
+        <span class="s1">org1 = emb1</span>
+        <span class="s1">org2 = emb2</span>
+        <span class="s1">org3 = emb3</span>
+        <span class="s1">org4 = emb4</span>
+        <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(</span><span class="s3">4</span><span class="s1">):</span>
+            <span class="s1">var_name = </span><span class="s4">&quot;emb&quot; </span><span class="s1">+ str(i + </span><span class="s3">1</span><span class="s1">)</span>
+            <span class="s1">tmp_var = locals()[var_name]</span>
+            <span class="s2">if </span><span class="s1">tmp_var </span><span class="s2">is not None</span><span class="s1">:</span>
+                <span class="s1">embcat.append(tmp_var)</span>
+        <span class="s1">emb_all = torch.cat(embcat, dim=</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">cx1 = self.attn_norm1(emb1) </span><span class="s2">if </span><span class="s1">emb1 </span><span class="s2">is not None else None</span>
+        <span class="s1">cx2 = self.attn_norm2(emb2) </span><span class="s2">if </span><span class="s1">emb2 </span><span class="s2">is not None else None</span>
+        <span class="s1">cx3 = self.attn_norm3(emb3) </span><span class="s2">if </span><span class="s1">emb3 </span><span class="s2">is not None else None</span>
+        <span class="s1">cx4 = self.attn_norm4(emb4) </span><span class="s2">if </span><span class="s1">emb4 </span><span class="s2">is not None else None</span>
+        <span class="s1">emb_all = self.attn_norm(emb_all)  </span><span class="s0"># 1 196 960</span>
+        <span class="s1">cx1, cx2, cx3, cx4, weights = self.channel_attn(cx1, cx2, cx3, cx4, emb_all)</span>
+        <span class="s1">cx1 = org1 + cx1 </span><span class="s2">if </span><span class="s1">emb1 </span><span class="s2">is not None else None</span>
+        <span class="s1">cx2 = org2 + cx2 </span><span class="s2">if </span><span class="s1">emb2 </span><span class="s2">is not None else None</span>
+        <span class="s1">cx3 = org3 + cx3 </span><span class="s2">if </span><span class="s1">emb3 </span><span class="s2">is not None else None</span>
+        <span class="s1">cx4 = org4 + cx4 </span><span class="s2">if </span><span class="s1">emb4 </span><span class="s2">is not None else None</span>
+
+        <span class="s1">org1 = cx1</span>
+        <span class="s1">org2 = cx2</span>
+        <span class="s1">org3 = cx3</span>
+        <span class="s1">org4 = cx4</span>
+        <span class="s1">x1 = self.ffn_norm1(cx1) </span><span class="s2">if </span><span class="s1">emb1 </span><span class="s2">is not None else None</span>
+        <span class="s1">x2 = self.ffn_norm2(cx2) </span><span class="s2">if </span><span class="s1">emb2 </span><span class="s2">is not None else None</span>
+        <span class="s1">x3 = self.ffn_norm3(cx3) </span><span class="s2">if </span><span class="s1">emb3 </span><span class="s2">is not None else None</span>
+        <span class="s1">x4 = self.ffn_norm4(cx4) </span><span class="s2">if </span><span class="s1">emb4 </span><span class="s2">is not None else None</span>
+        <span class="s1">x1 = self.ffn1(x1) </span><span class="s2">if </span><span class="s1">emb1 </span><span class="s2">is not None else None</span>
+        <span class="s1">x2 = self.ffn2(x2) </span><span class="s2">if </span><span class="s1">emb2 </span><span class="s2">is not None else None</span>
+        <span class="s1">x3 = self.ffn3(x3) </span><span class="s2">if </span><span class="s1">emb3 </span><span class="s2">is not None else None</span>
+        <span class="s1">x4 = self.ffn4(x4) </span><span class="s2">if </span><span class="s1">emb4 </span><span class="s2">is not None else None</span>
+        <span class="s1">x1 = x1 + org1 </span><span class="s2">if </span><span class="s1">emb1 </span><span class="s2">is not None else None</span>
+        <span class="s1">x2 = x2 + org2 </span><span class="s2">if </span><span class="s1">emb2 </span><span class="s2">is not None else None</span>
+        <span class="s1">x3 = x3 + org3 </span><span class="s2">if </span><span class="s1">emb3 </span><span class="s2">is not None else None</span>
+        <span class="s1">x4 = x4 + org4 </span><span class="s2">if </span><span class="s1">emb4 </span><span class="s2">is not None else None</span>
+
+        <span class="s2">return </span><span class="s1">x1, x2, x3, x4, weights</span>
+
+
+<span class="s2">class </span><span class="s1">Encoder(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, config, vis, channel_num):</span>
+        <span class="s1">super(Encoder, self).__init__()</span>
+        <span class="s1">self.vis = vis</span>
+        <span class="s1">self.layer = nn.ModuleList()</span>
+        <span class="s1">self.encoder_norm1 = LayerNorm3d(channel_num[</span><span class="s3">0</span><span class="s1">], LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+        <span class="s1">self.encoder_norm2 = LayerNorm3d(channel_num[</span><span class="s3">1</span><span class="s1">], LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+        <span class="s1">self.encoder_norm3 = LayerNorm3d(channel_num[</span><span class="s3">2</span><span class="s1">], LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+        <span class="s1">self.encoder_norm4 = LayerNorm3d(channel_num[</span><span class="s3">3</span><span class="s1">], LayerNorm_type=</span><span class="s4">'WithBias'</span><span class="s1">)</span>
+        <span class="s2">for </span><span class="s1">_ </span><span class="s2">in </span><span class="s1">range(config.transformer[</span><span class="s4">&quot;num_layers&quot;</span><span class="s1">]):</span>
+            <span class="s1">layer = Block_ViT(config, vis, channel_num)</span>
+            <span class="s1">self.layer.append(copy.deepcopy(layer))</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, emb1, emb2, emb3, emb4):</span>
+        <span class="s1">attn_weights = []</span>
+        <span class="s2">for </span><span class="s1">layer_block </span><span class="s2">in </span><span class="s1">self.layer:</span>
+            <span class="s1">emb1, emb2, emb3, emb4, weights = layer_block(emb1, emb2, emb3, emb4)</span>
+            <span class="s2">if </span><span class="s1">self.vis:</span>
+                <span class="s1">attn_weights.append(weights)</span>
+        <span class="s1">emb1 = self.encoder_norm1(emb1) </span><span class="s2">if </span><span class="s1">emb1 </span><span class="s2">is not None else None</span>
+        <span class="s1">emb2 = self.encoder_norm2(emb2) </span><span class="s2">if </span><span class="s1">emb2 </span><span class="s2">is not None else None</span>
+        <span class="s1">emb3 = self.encoder_norm3(emb3) </span><span class="s2">if </span><span class="s1">emb3 </span><span class="s2">is not None else None</span>
+        <span class="s1">emb4 = self.encoder_norm4(emb4) </span><span class="s2">if </span><span class="s1">emb4 </span><span class="s2">is not None else None</span>
+        <span class="s2">return </span><span class="s1">emb1, emb2, emb3, emb4, attn_weights</span>
+
+
+<span class="s2">class </span><span class="s1">ChannelTransformer(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, config, vis, img_size, channel_num=[</span><span class="s3">64</span><span class="s1">, </span><span class="s3">128</span><span class="s1">, </span><span class="s3">256</span><span class="s1">, </span><span class="s3">512</span><span class="s1">], patchSize=[</span><span class="s3">32</span><span class="s1">, </span><span class="s3">16</span><span class="s1">, </span><span class="s3">8</span><span class="s1">, </span><span class="s3">4</span><span class="s1">]):</span>
+        <span class="s1">super().__init__()</span>
+
+        <span class="s1">self.patchSize_1 = patchSize[</span><span class="s3">0</span><span class="s1">]</span>
+        <span class="s1">self.patchSize_2 = patchSize[</span><span class="s3">1</span><span class="s1">]</span>
+        <span class="s1">self.patchSize_3 = patchSize[</span><span class="s3">2</span><span class="s1">]</span>
+        <span class="s1">self.patchSize_4 = patchSize[</span><span class="s3">3</span><span class="s1">]</span>
+        <span class="s1">self.embeddings_1 = Channel_Embeddings(config, self.patchSize_1, img_size=img_size, in_channels=channel_num[</span><span class="s3">0</span><span class="s1">])</span>
+        <span class="s1">self.embeddings_2 = Channel_Embeddings(config, self.patchSize_2, img_size=img_size // </span><span class="s3">2</span><span class="s1">, in_channels=channel_num[</span><span class="s3">1</span><span class="s1">])</span>
+        <span class="s1">self.embeddings_3 = Channel_Embeddings(config, self.patchSize_3, img_size=img_size // </span><span class="s3">4</span><span class="s1">, in_channels=channel_num[</span><span class="s3">2</span><span class="s1">])</span>
+        <span class="s1">self.embeddings_4 = Channel_Embeddings(config, self.patchSize_4, img_size=img_size // </span><span class="s3">8</span><span class="s1">, in_channels=channel_num[</span><span class="s3">3</span><span class="s1">])</span>
+        <span class="s1">self.encoder = Encoder(config, vis, channel_num)</span>
+
+        <span class="s1">self.reconstruct_1 = Reconstruct(channel_num[</span><span class="s3">0</span><span class="s1">], channel_num[</span><span class="s3">0</span><span class="s1">], kernel_size=</span><span class="s3">1</span><span class="s1">, scale_factor=(self.patchSize_1, self.patchSize_1))</span>
+        <span class="s1">self.reconstruct_2 = Reconstruct(channel_num[</span><span class="s3">1</span><span class="s1">], channel_num[</span><span class="s3">1</span><span class="s1">], kernel_size=</span><span class="s3">1</span><span class="s1">, scale_factor=(self.patchSize_2, self.patchSize_2))</span>
+        <span class="s1">self.reconstruct_3 = Reconstruct(channel_num[</span><span class="s3">2</span><span class="s1">], channel_num[</span><span class="s3">2</span><span class="s1">], kernel_size=</span><span class="s3">1</span><span class="s1">, scale_factor=(self.patchSize_3, self.patchSize_3))</span>
+        <span class="s1">self.reconstruct_4 = Reconstruct(channel_num[</span><span class="s3">3</span><span class="s1">], channel_num[</span><span class="s3">3</span><span class="s1">], kernel_size=</span><span class="s3">1</span><span class="s1">, scale_factor=(self.patchSize_4, self.patchSize_4))</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, en1, en2, en3, en4):</span>
+        <span class="s1">emb1 = self.embeddings_1(en1)</span>
+        <span class="s1">emb2 = self.embeddings_2(en2)</span>
+        <span class="s1">emb3 = self.embeddings_3(en3)</span>
+        <span class="s1">emb4 = self.embeddings_4(en4)</span>
+
+        <span class="s1">encoded1, encoded2, encoded3, encoded4, attn_weights = self.encoder(emb1, emb2, emb3, emb4)  </span><span class="s0"># (B, n_patch, hidden)</span>
+
+        <span class="s1">x1 = self.reconstruct_1(encoded1) </span><span class="s2">if </span><span class="s1">en1 </span><span class="s2">is not None else None</span>
+        <span class="s1">x2 = self.reconstruct_2(encoded2) </span><span class="s2">if </span><span class="s1">en2 </span><span class="s2">is not None else None</span>
+        <span class="s1">x3 = self.reconstruct_3(encoded3) </span><span class="s2">if </span><span class="s1">en3 </span><span class="s2">is not None else None</span>
+        <span class="s1">x4 = self.reconstruct_4(encoded4) </span><span class="s2">if </span><span class="s1">en4 </span><span class="s2">is not None else None</span>
+
+        <span class="s1">x1 = x1 + en1 </span><span class="s2">if </span><span class="s1">en1 </span><span class="s2">is not None else None</span>
+        <span class="s1">x2 = x2 + en2 </span><span class="s2">if </span><span class="s1">en2 </span><span class="s2">is not None else None</span>
+        <span class="s1">x3 = x3 + en3 </span><span class="s2">if </span><span class="s1">en3 </span><span class="s2">is not None else None</span>
+        <span class="s1">x4 = x4 + en4 </span><span class="s2">if </span><span class="s1">en4 </span><span class="s2">is not None else None</span>
+
+        <span class="s2">return </span><span class="s1">x1, x2, x3, x4, attn_weights</span>
+
+
+<span class="s2">def </span><span class="s1">get_activation(activation_type):</span>
+    <span class="s1">activation_type = activation_type.lower()</span>
+    <span class="s2">if </span><span class="s1">hasattr(nn, activation_type):</span>
+        <span class="s2">return </span><span class="s1">getattr(nn, activation_type)()</span>
+    <span class="s2">else</span><span class="s1">:</span>
+        <span class="s2">return </span><span class="s1">nn.ReLU()</span>
+
+
+<span class="s2">def </span><span class="s1">_make_nConv(in_channels, out_channels, nb_Conv, activation=</span><span class="s4">'ReLU'</span><span class="s1">):</span>
+    <span class="s1">layers = []</span>
+    <span class="s1">layers.append(CBN(in_channels, out_channels, activation))</span>
+
+    <span class="s2">for </span><span class="s1">_ </span><span class="s2">in </span><span class="s1">range(nb_Conv - </span><span class="s3">1</span><span class="s1">):</span>
+        <span class="s1">layers.append(CBN(out_channels, out_channels, activation))</span>
+    <span class="s2">return </span><span class="s1">nn.Sequential(*layers)</span>
+
+
+<span class="s2">class </span><span class="s1">CBN(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, in_channels, out_channels, activation=</span><span class="s4">'ReLU'</span><span class="s1">):</span>
+        <span class="s1">super(CBN, self).__init__()</span>
+        <span class="s1">self.conv = nn.Conv2d(in_channels, out_channels,</span>
+                              <span class="s1">kernel_size=</span><span class="s3">3</span><span class="s1">, padding=</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">self.norm = nn.BatchNorm2d(out_channels)</span>
+        <span class="s1">self.activation = get_activation(activation)</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, x):</span>
+        <span class="s1">out = self.conv(x)</span>
+        <span class="s1">out = self.norm(out)</span>
+        <span class="s2">return </span><span class="s1">self.activation(out)</span>
+
+
+<span class="s2">class </span><span class="s1">DownBlock(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, in_channels, out_channels, nb_Conv, activation=</span><span class="s4">'ReLU'</span><span class="s1">):</span>
+        <span class="s1">super(DownBlock, self).__init__()</span>
+        <span class="s1">self.maxpool = nn.MaxPool2d(</span><span class="s3">2</span><span class="s1">)</span>
+        <span class="s1">self.nConvs = _make_nConv(in_channels, out_channels, nb_Conv, activation)</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, x):</span>
+        <span class="s1">out = self.maxpool(x)</span>
+        <span class="s2">return </span><span class="s1">self.nConvs(out)</span>
+
+
+<span class="s2">class </span><span class="s1">Flatten(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">forward(self, x):</span>
+        <span class="s2">return </span><span class="s1">x.view(x.size(</span><span class="s3">0</span><span class="s1">), -</span><span class="s3">1</span><span class="s1">)</span>
+
+
+<span class="s2">class </span><span class="s1">CCA(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, F_g, F_x):</span>
+        <span class="s1">super().__init__()</span>
+        <span class="s1">self.mlp_x = nn.Sequential(</span>
+            <span class="s1">Flatten(),</span>
+            <span class="s1">nn.Linear(F_x, F_x))</span>
+        <span class="s1">self.mlp_g = nn.Sequential(</span>
+            <span class="s1">Flatten(),</span>
+            <span class="s1">nn.Linear(F_g, F_x))</span>
+        <span class="s1">self.relu = nn.ReLU(inplace=</span><span class="s2">True</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, g, x):</span>
+        <span class="s1">avg_pool_x = F.avg_pool2d(x, (x.size(</span><span class="s3">2</span><span class="s1">), x.size(</span><span class="s3">3</span><span class="s1">)), stride=(x.size(</span><span class="s3">2</span><span class="s1">), x.size(</span><span class="s3">3</span><span class="s1">)))</span>
+        <span class="s1">channel_att_x = self.mlp_x(avg_pool_x)</span>
+        <span class="s1">avg_pool_g = F.avg_pool2d(g, (g.size(</span><span class="s3">2</span><span class="s1">), g.size(</span><span class="s3">3</span><span class="s1">)), stride=(g.size(</span><span class="s3">2</span><span class="s1">), g.size(</span><span class="s3">3</span><span class="s1">)))</span>
+        <span class="s1">channel_att_g = self.mlp_g(avg_pool_g)</span>
+        <span class="s1">channel_att_sum = (channel_att_x + channel_att_g) / </span><span class="s3">2.0</span>
+        <span class="s1">scale = torch.sigmoid(channel_att_sum).unsqueeze(</span><span class="s3">2</span><span class="s1">).unsqueeze(</span><span class="s3">3</span><span class="s1">).expand_as(x)</span>
+        <span class="s1">x_after_channel = x * scale</span>
+        <span class="s1">out = self.relu(x_after_channel)</span>
+        <span class="s2">return </span><span class="s1">out</span>
+
+
+<span class="s2">class </span><span class="s1">UpBlock_attention(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, in_channels, out_channels, nb_Conv, activation=</span><span class="s4">'ReLU'</span><span class="s1">):</span>
+        <span class="s1">super().__init__()</span>
+        <span class="s1">self.up = nn.Upsample(scale_factor=</span><span class="s3">2</span><span class="s1">)</span>
+        <span class="s1">self.coatt = CCA(F_g=in_channels // </span><span class="s3">2</span><span class="s1">, F_x=in_channels // </span><span class="s3">2</span><span class="s1">)</span>
+        <span class="s1">self.nConvs = _make_nConv(in_channels, out_channels, nb_Conv, activation)</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, x, skip_x):</span>
+        <span class="s1">up = self.up(x)</span>
+        <span class="s1">skip_x_att = self.coatt(g=up, x=skip_x)</span>
+        <span class="s1">x = torch.cat([skip_x_att, up], dim=</span><span class="s3">1</span><span class="s1">)  </span><span class="s0"># dim 1 is the channel dimension</span>
+        <span class="s2">return </span><span class="s1">self.nConvs(x)</span>
+
+
+<span class="s2">class </span><span class="s1">Res_block(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, in_channels, out_channels, stride=</span><span class="s3">1</span><span class="s1">):</span>
+        <span class="s1">super(Res_block, self).__init__()</span>
+        <span class="s1">self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=</span><span class="s3">3</span><span class="s1">, stride=stride, padding=</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">self.bn1 = nn.BatchNorm2d(out_channels)</span>
+        <span class="s1">self.relu = nn.LeakyReLU(inplace=</span><span class="s2">True</span><span class="s1">)</span>
+        <span class="s1">self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=</span><span class="s3">3</span><span class="s1">, padding=</span><span class="s3">1</span><span class="s1">)</span>
+        <span class="s1">self.bn2 = nn.BatchNorm2d(out_channels)</span>
+        <span class="s0"># self.fca = FCA_Layer(out_channels)</span>
+        <span class="s2">if </span><span class="s1">stride != </span><span class="s3">1 </span><span class="s2">or </span><span class="s1">out_channels != in_channels:</span>
+            <span class="s1">self.shortcut = nn.Sequential(</span>
+                <span class="s1">nn.Conv2d(in_channels, out_channels, kernel_size=</span><span class="s3">1</span><span class="s1">, stride=stride),</span>
+                <span class="s1">nn.BatchNorm2d(out_channels))</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s1">self.shortcut = </span><span class="s2">None</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, x):</span>
+        <span class="s1">residual = x</span>
+        <span class="s2">if </span><span class="s1">self.shortcut </span><span class="s2">is not None</span><span class="s1">:</span>
+            <span class="s1">residual = self.shortcut(x)</span>
+        <span class="s1">out = self.conv1(x)</span>
+        <span class="s1">out = self.bn1(out)</span>
+        <span class="s1">out = self.relu(out)</span>
+        <span class="s1">out = self.conv2(out)</span>
+        <span class="s1">out = self.bn2(out)</span>
+
+        <span class="s1">out += residual</span>
+        <span class="s1">out = self.relu(out)</span>
+        <span class="s2">return </span><span class="s1">out</span>
+
+
+<span class="s2">class </span><span class="s1">SCTransNet(nn.Module):</span>
+    <span class="s2">def </span><span class="s1">__init__(self, config, n_channels=</span><span class="s3">1</span><span class="s1">, n_classes=</span><span class="s3">1</span><span class="s1">, img_size=</span><span class="s3">256</span><span class="s1">, vis=</span><span class="s2">False</span><span class="s1">, mode=</span><span class="s4">'train'</span><span class="s1">, deepsuper=</span><span class="s2">True</span><span class="s1">):</span>
+        <span class="s1">super().__init__()</span>
+        <span class="s1">self.vis = vis</span>
+        <span class="s1">self.deepsuper = deepsuper</span>
+        <span class="s1">print(</span><span class="s4">'Deep-Supervision:'</span><span class="s1">, deepsuper)</span>
+        <span class="s1">self.mode = mode</span>
+        <span class="s1">self.n_channels = n_channels</span>
+        <span class="s1">self.n_classes = n_classes</span>
+        <span class="s1">in_channels = config.base_channel  </span><span class="s0"># basic channel 64</span>
+        <span class="s1">block = Res_block</span>
+        <span class="s1">self.pool = nn.MaxPool2d(</span><span class="s3">2</span><span class="s1">, </span><span class="s3">2</span><span class="s1">)</span>
+        <span class="s1">self.inc = self._make_layer(block, n_channels, in_channels)</span>
+        <span class="s1">self.down_encoder1 = self._make_layer(block, in_channels, in_channels * </span><span class="s3">2</span><span class="s1">, </span><span class="s3">1</span><span class="s1">)  </span><span class="s0"># 64  128</span>
+        <span class="s1">self.down_encoder2 = self._make_layer(block, in_channels * </span><span class="s3">2</span><span class="s1">, in_channels * </span><span class="s3">4</span><span class="s1">, </span><span class="s3">1</span><span class="s1">)  </span><span class="s0"># 64  128</span>
+        <span class="s1">self.down_encoder3 = self._make_layer(block, in_channels * </span><span class="s3">4</span><span class="s1">, in_channels * </span><span class="s3">8</span><span class="s1">, </span><span class="s3">1</span><span class="s1">)  </span><span class="s0"># 64  128</span>
+        <span class="s1">self.down_encoder4 = self._make_layer(block, in_channels * </span><span class="s3">8</span><span class="s1">, in_channels * </span><span class="s3">8</span><span class="s1">, </span><span class="s3">1</span><span class="s1">)  </span><span class="s0"># 64  128</span>
+        <span class="s1">self.mtc = ChannelTransformer(config, vis, img_size,</span>
+                                      <span class="s1">channel_num=[in_channels, in_channels * </span><span class="s3">2</span><span class="s1">, in_channels * </span><span class="s3">4</span><span class="s1">, in_channels * </span><span class="s3">8</span><span class="s1">],</span>
+                                      <span class="s1">patchSize=config.patch_sizes)</span>
+        <span class="s1">self.up_decoder4 = UpBlock_attention(in_channels * </span><span class="s3">16</span><span class="s1">, in_channels * </span><span class="s3">4</span><span class="s1">, nb_Conv=</span><span class="s3">2</span><span class="s1">)</span>
+        <span class="s1">self.up_decoder3 = UpBlock_attention(in_channels * </span><span class="s3">8</span><span class="s1">, in_channels * </span><span class="s3">2</span><span class="s1">, nb_Conv=</span><span class="s3">2</span><span class="s1">)</span>
+        <span class="s1">self.up_decoder2 = UpBlock_attention(in_channels * </span><span class="s3">4</span><span class="s1">, in_channels, nb_Conv=</span><span class="s3">2</span><span class="s1">)</span>
+        <span class="s1">self.up_decoder1 = UpBlock_attention(in_channels * </span><span class="s3">2</span><span class="s1">, in_channels, nb_Conv=</span><span class="s3">2</span><span class="s1">)</span>
+        <span class="s1">self.outc = nn.Conv2d(in_channels, n_classes, kernel_size=(</span><span class="s3">1</span><span class="s1">, </span><span class="s3">1</span><span class="s1">), stride=(</span><span class="s3">1</span><span class="s1">, </span><span class="s3">1</span><span class="s1">))</span>
+
+        <span class="s2">if </span><span class="s1">self.deepsuper:</span>
+            <span class="s1">self.gt_conv5 = nn.Sequential(nn.Conv2d(in_channels * </span><span class="s3">8</span><span class="s1">, </span><span class="s3">1</span><span class="s1">, </span><span class="s3">1</span><span class="s1">))</span>
+            <span class="s1">self.gt_conv4 = nn.Sequential(nn.Conv2d(in_channels * </span><span class="s3">4</span><span class="s1">, </span><span class="s3">1</span><span class="s1">, </span><span class="s3">1</span><span class="s1">))</span>
+            <span class="s1">self.gt_conv3 = nn.Sequential(nn.Conv2d(in_channels * </span><span class="s3">2</span><span class="s1">, </span><span class="s3">1</span><span class="s1">, </span><span class="s3">1</span><span class="s1">))</span>
+            <span class="s1">self.gt_conv2 = nn.Sequential(nn.Conv2d(in_channels * </span><span class="s3">1</span><span class="s1">, </span><span class="s3">1</span><span class="s1">, </span><span class="s3">1</span><span class="s1">))</span>
+            <span class="s1">self.outconv = nn.Conv2d(</span><span class="s3">5 </span><span class="s1">* </span><span class="s3">1</span><span class="s1">, </span><span class="s3">1</span><span class="s1">, </span><span class="s3">1</span><span class="s1">)</span>
+
+    <span class="s2">def </span><span class="s1">_make_layer(self, block, input_channels, output_channels, num_blocks=</span><span class="s3">1</span><span class="s1">):</span>
+        <span class="s1">layers = []</span>
+        <span class="s1">layers.append(block(input_channels, output_channels))</span>
+        <span class="s2">for </span><span class="s1">i </span><span class="s2">in </span><span class="s1">range(num_blocks - </span><span class="s3">1</span><span class="s1">):</span>
+            <span class="s1">layers.append(block(output_channels, output_channels))</span>
+        <span class="s2">return </span><span class="s1">nn.Sequential(*layers)</span>
+
+    <span class="s2">def </span><span class="s1">forward(self, x):</span>
+        <span class="s1">x1 = self.inc(x)  </span><span class="s0"># 64 224 224</span>
+        <span class="s1">x2 = self.down_encoder1(self.pool(x1))  </span><span class="s0"># 128 112 112</span>
+        <span class="s1">x3 = self.down_encoder2(self.pool(x2))  </span><span class="s0"># 256 56  56</span>
+        <span class="s1">x4 = self.down_encoder3(self.pool(x3))  </span><span class="s0"># 512 28  28</span>
+        <span class="s1">d5 = self.down_encoder4(self.pool(x4))  </span><span class="s0"># 512 14  14</span>
+        <span class="s0">#  CCT</span>
+        <span class="s1">f1 = x1</span>
+        <span class="s1">f2 = x2</span>
+        <span class="s1">f3 = x3</span>
+        <span class="s1">f4 = x4</span>
+        <span class="s0">#  CCT</span>
+        <span class="s1">x1, x2, x3, x4, att_weights = self.mtc(x1, x2, x3, x4)</span>
+        <span class="s1">x1 = x1 + f1</span>
+        <span class="s1">x2 = x2 + f2</span>
+        <span class="s1">x3 = x3 + f3</span>
+        <span class="s1">x4 = x4 + f4</span>
+        <span class="s0">#  Feature fusion</span>
+        <span class="s1">d4 = self.up_decoder4(d5, x4)</span>
+        <span class="s1">d3 = self.up_decoder3(d4, x3)</span>
+        <span class="s1">d2 = self.up_decoder2(d3, x2)</span>
+        <span class="s1">out = self.outc(self.up_decoder1(d2, x1))</span>
+        <span class="s0"># deep supervision</span>
+        <span class="s2">if </span><span class="s1">self.deepsuper:</span>
+            <span class="s1">gt_5 = self.gt_conv5(d5)</span>
+            <span class="s1">gt_4 = self.gt_conv4(d4)</span>
+            <span class="s1">gt_3 = self.gt_conv3(d3)</span>
+            <span class="s1">gt_2 = self.gt_conv2(d2)</span>
+            <span class="s0"># 原始深监督</span>
+            <span class="s1">gt5 = F.interpolate(gt_5, scale_factor=</span><span class="s3">16</span><span class="s1">, mode=</span><span class="s4">'bilinear'</span><span class="s1">, align_corners=</span><span class="s2">True</span><span class="s1">)</span>
+            <span class="s1">gt4 = F.interpolate(gt_4, scale_factor=</span><span class="s3">8</span><span class="s1">, mode=</span><span class="s4">'bilinear'</span><span class="s1">, align_corners=</span><span class="s2">True</span><span class="s1">)</span>
+            <span class="s1">gt3 = F.interpolate(gt_3, scale_factor=</span><span class="s3">4</span><span class="s1">, mode=</span><span class="s4">'bilinear'</span><span class="s1">, align_corners=</span><span class="s2">True</span><span class="s1">)</span>
+            <span class="s1">gt2 = F.interpolate(gt_2, scale_factor=</span><span class="s3">2</span><span class="s1">, mode=</span><span class="s4">'bilinear'</span><span class="s1">, align_corners=</span><span class="s2">True</span><span class="s1">)</span>
+            <span class="s1">d0 = self.outconv(torch.cat((gt2, gt3, gt4, gt5, out), </span><span class="s3">1</span><span class="s1">))</span>
+
+            <span class="s2">if </span><span class="s1">self.mode == </span><span class="s4">'train'</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">(torch.sigmoid(gt5), torch.sigmoid(gt4), torch.sigmoid(gt3), torch.sigmoid(gt2), torch.sigmoid(d0), torch.sigmoid(out))</span>
+            <span class="s2">else</span><span class="s1">:</span>
+                <span class="s2">return </span><span class="s1">torch.sigmoid(out)</span>
+        <span class="s2">else</span><span class="s1">:</span>
+            <span class="s2">return </span><span class="s1">torch.sigmoid(out)</span>
+
+
+<span class="s2">if </span><span class="s1">__name__ == </span><span class="s4">'__main__'</span><span class="s1">:</span>
+    <span class="s1">config_vit = get_CTranS_config()</span>
+    <span class="s1">model = SCTransNet(config_vit, mode=</span><span class="s4">'train'</span><span class="s1">, deepsuper=</span><span class="s2">True</span><span class="s1">)</span>
+    <span class="s1">model = model</span>
+    <span class="s0"># print(model)</span>
+    <span class="s1">modelfile =</span><span class="s4">r'/home/l/SCTransNet.txt'</span>
+    <span class="s1">params = sum(p.numel() </span><span class="s2">for </span><span class="s1">p </span><span class="s2">in </span><span class="s1">model.parameters() </span><span class="s2">if </span><span class="s1">p.requires_grad)</span>
+    <span class="s2">with </span><span class="s1">open(modelfile, </span><span class="s4">'wt'</span><span class="s1">) </span><span class="s2">as </span><span class="s1">f:</span>
+        <span class="s1">print(</span><span class="s4">f'模型参数：</span><span class="s5">{</span><span class="s1">params</span><span class="s5">}\n</span><span class="s4">'</span><span class="s1">, file=f)</span>
+        <span class="s1">print(</span><span class="s4">f'</span><span class="s5">\n</span><span class="s4">'</span><span class="s1">, file=f)</span>
+        <span class="s1">print(</span><span class="s4">f'模型结构：</span><span class="s5">\n{</span><span class="s1">model</span><span class="s5">}\n</span><span class="s4">'</span><span class="s1">, file=f)</span>
+    <span class="s1">inputs = torch.rand(</span><span class="s3">32</span><span class="s1">, </span><span class="s3">1</span><span class="s1">, </span><span class="s3">256</span><span class="s1">, </span><span class="s3">256</span><span class="s1">)</span>
+    <span class="s1">output = model(inputs)</span>
+    <span class="s1">flops, params = profile(model, (inputs,))</span>
+
+    <span class="s1">print(</span><span class="s4">&quot;-&quot; </span><span class="s1">* </span><span class="s3">50</span><span class="s1">)</span>
+    <span class="s1">print(</span><span class="s4">'FLOPs = ' </span><span class="s1">+ str(flops / </span><span class="s3">1000 </span><span class="s1">** </span><span class="s3">3</span><span class="s1">) + </span><span class="s4">' G'</span><span class="s1">)</span>
+    <span class="s1">print(</span><span class="s4">'Params = ' </span><span class="s1">+ str(params / </span><span class="s3">1000 </span><span class="s1">** </span><span class="s3">2</span><span class="s1">) + </span><span class="s4">' M'</span><span class="s1">)</span>
+</pre>
+</body>
+</html>
