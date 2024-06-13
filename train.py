@@ -13,7 +13,6 @@ from torch.optim import Adagrad
 from loss import AverageMeter
 from tqdm import tqdm
 import torch.utils.data as Data
-from model.MSHNet.data import *
 import torchvision.transforms as transforms
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
