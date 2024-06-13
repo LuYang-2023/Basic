@@ -6,9 +6,6 @@ import torch.nn.functional as F
 from utils import *
 import os
 from loss import *
-###wo
-from model.MSHNet.loss import MSHNet_SLSIoULoss as MSHNet_SoftIoULoss
-# from model.ISViMamba.IS_ViMamba import IS_ViMamba
 from model import *
 from skimage.feature.tests.test_orb import img
 
@@ -64,13 +61,8 @@ class Net(nn.Module):
     def forward(self, img):
         return self.model(img)
 
-    # def loss(self,pred,labels,warm_epoch,epoch):
-    #     loss = self.cal_loss(pred,labels,warm_epoch,epoch)
-    #     return loss
 
     def loss(self, preds, gt_masks):
-
-        ###wo:我加的，为移植SCTransNet
         if self.model_name == 'SCTransNet':
             if isinstance(preds, list):
                 loss_total = 0
