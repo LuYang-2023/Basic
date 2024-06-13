@@ -19,14 +19,6 @@ class Net(nn.Module):
         super(Net, self).__init__()
         self.model_name = model_name
 
-        ###wo:损失函数
-        #self.cal_loss = SoftIoULoss()
-        if self.model_name == 'MSHNet':
-            self.cal_loss = MSHNet_SoftIoULoss()
-        else:
-            self.cal_loss = SoftIoULoss()
-
-
         if model_name == 'DNANet':
             if mode == 'train':
                 self.model = DNANet(mode='train')
@@ -61,9 +53,6 @@ class Net(nn.Module):
         elif model_name == 'RDIAN':
             self.model = RDIAN()
 
-        ###wo
-        elif model_name == 'MSHNet':
-            self.model = MSHNet(3)
         elif model_name == 'SCTransNet':
             self.cal_loss = nn.BCELoss(size_average=True)
             config_vit = config.get_SCTrans_config()
@@ -71,8 +60,6 @@ class Net(nn.Module):
                 self.model = SCTransNet(config_vit, mode='train', deepsuper=True)
             else:
                 self.model = SCTransNet(config_vit, mode='test', deepsuper=True)
-        elif model_name == "IS_ViMamba":
-                self.model = IS_ViMamba()
         
     def forward(self, img):
         return self.model(img)
