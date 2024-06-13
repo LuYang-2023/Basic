@@ -1,15 +1,7 @@
 import argparse
-import time
 import datetime
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
-from net import Net
-from dataset import *
-import matplotlib.pyplot as plt
-from metrics import *
-import numpy as np
-import os
-from torch.optim import Adagrad
 from loss import AverageMeter
 from tqdm import tqdm
 import torch.utils.data as Data
@@ -21,27 +13,13 @@ parser = argparse.ArgumentParser(description="PyTorch BasicIRSTD train")
 #                     help="model_name: 'ACM', 'ALCNet', 'DNANet', 'ISNet', 'UIUNet', 'RDIAN', 'ISTDU-Net', 'U-Net', 'RISTDnet'")
 parser.add_argument("--model_names", default=['IS_ViMamba'], type=str,nargs="+",
                     help="model_name: 'IS_ViMamba','SCTransNet', 'MSHNet', 'DNANet', 'ISNet', 'UIUNet', 'RDIAN', 'ISTDU-Net', 'U-Net', 'RISTDnet'")
-parser.add_argument("--dataset_names", default=['Dataset-mask_256x256'], type=str,nargs='+',
-                    help="dataset_name: 'Dataset-mask','NUAA-SIRST', 'NUDT-SIRST', 'IRSTD-1K', 'SIRST3', 'NUDT-SIRST-Sea', 'IRDST-real'")
-
-parser.add_argument("--img_norm_cfg", default=None, type=dict,
-                    help="specific a img_norm_cfg, default=None (using img_norm_cfg values of each dataset)")
-
-parser.add_argument("--dataset_dir", default='/home/l/ws_dataset/for_PRCV24/', type=str, help="train_dataset_dir")
-parser.add_argument("--batchSize", type=int, default=4, help="Training batch sizse")
-parser.add_argument("--patchSize", type=int, default=256, help="Training patch size")
-parser.add_argument("--save", default='/home/l/ws_running/for_PRCV24/log', type=str, help="Save path of checkpoints")
-parser.add_argument("--resume", default=None, type=list, help="Resume from exisiting checkpoints (default: None)")
+parser.add_argu(default: None)")
 parser.add_argument("--nEpochs", type=int, default=400, help="Number of epochs")
 parser.add_argument("--optimizer_name", default='Adam', type=str, help="optimizer name: Adam, Adagrad, SGD")
 parser.add_argument("--optimizer_settings", default={'lr': 5e-4}, type=dict, help="optimizer settings")
 parser.add_argument("--scheduler_name", default='MultiStepLR', type=str, help="scheduler name: MultiStepLR")
-parser.add_argument("--scheduler_settings", default={'step': [200, 300], 'gamma': 0.5}, type=dict, help="scheduler settings")
-parser.add_argument("--threads", type=int, default=4, help="Number of threads for data loader to use")
-parser.add_argument("--threshold", type=float, default=0.5, help="Threshold for test")
-parser.add_argument("--seed", type=int, default=42, help="Threshold for test")
 
-###wo
+
 parser.add_argument('--warm-epoch',type=int,default=5)
 parser.add_argument('--base-size',type=int,default=256)
 parser.add_argument('--crop-size',type=int,default=256)
@@ -66,16 +44,7 @@ def train():
         # train_loader = Data.DataLoader(trainset, opt.batchSize, shuffle=True, drop_last=True,collate_fn=PRCV_collate_fn)
         train_loader = Data.DataLoader(trainset, opt.batchSize, shuffle=True, drop_last=True)
         ###wo:为自定义的采样器
-        # train_loader = Data.DataLoader(trainset, opt.batchSize, shuffle=False, drop_last=True,transforms=transform)
-        val_loader = Data.DataLoader(valset, 1, drop_last=False,collate_fn=PRCV_collate_fn)
-    else:
-        train_set = TrainSetLoader(dataset_dir=opt.dataset_dir, dataset_name=opt.dataset_name, patch_size=opt.patchSize, img_norm_cfg=opt.img_norm_cfg)
-        train_loader = DataLoader(dataset=train_set, num_workers=opt.threads, batch_size=opt.batchSize, shuffle=True)
-        ###wo:为自定义的采样器
-        # train_loader = DataLoader(dataset=train_set, num_workers=opt.threads, batch_size=opt.batchSize, shuffle=False,collate_fn=PRCV_collate_fn,pin_memory=True)
-
-    net = Net(model_name=opt.model_name, mode='train').cuda()
-    net.train()
+        # train_loader = Data.DataLoa
     
     epoch_state = 0
     total_loss_list = []
@@ -93,16 +62,7 @@ def train():
     
     ### Default settings                
     if opt.optimizer_name == 'Adam':
-        opt.optimizer_settings = {'lr': 5e-4}
-        opt.scheduler_name = 'MultiStepLR'
-        opt.scheduler_settings = {'epochs':400, 'step': [200, 300], 'gamma': 0.1}
-    
-    ### Default settings of DNANet                
-    if opt.optimizer_name == 'Adagrad':
-        opt.optimizer_settings = {'lr': 0.05}
-        opt.scheduler_name = 'CosineAnnealingLR'
-        opt.scheduler_settings = {'epochs':1500, 'min_lr':1e-5}
-
+        opt.optimizer_
 
     opt.nEpochs = opt.scheduler_settings['epochs']
         
@@ -243,17 +203,7 @@ def batch_to_same(batched_inputs:List[torch.Tensor]):
         Args:
           batch_inputs: 图片张量列表
         Return:
-          padded_images: 填充后的批量图片张量
-          image_sizes_orig: 原始图片尺寸信息
-    """
-    ## 保留原始图片尺寸
-    image_sizes_orig = [[image.shape[-2], image.shape[-1]] for image in batched_inputs]
-    ## 找到最大尺寸
-    max_size = max([max(image_size[0], image_size[1]) for image_size in image_sizes_orig])
-
-    ## 构造批量形状 (batch_size, channel, max_size, max_size)
-    # batch_shape = (len(batched_inputs), batched_inputs[0].shape[0], max_size, max_size)
-    ###wo:640
+          padded_images: 
     batch_shape = (len(batched_inputs), batched_inputs[0].shape[0], 640, 640)
 
     padded_images = batched_inputs[0].new_full(batch_shape, 0.0)
@@ -297,15 +247,7 @@ if __name__ == '__main__':
             note = '调试SCTransNet和MSHNet'
             opt.run_root = opt.save + '/' + opt.dataset_name + '_' + opt.model_name+ '_' + (time.ctime()).replace(' ', '_').replace(':', '_') + '_' + note
             opt.save = opt.run_root
-            os.mkdir(opt.run_root)
-            # opt.f = open(opt.save + '/' + opt.dataset_name + '_' + opt.model_name + '_' + (time.ctime()).replace(' ', '_').replace(':', '_') + '.txt', 'w')
-            logfile = opt.run_root + '/' + opt.dataset_name + '_' + opt.model_name + '_' + (time.ctime()).replace(' ', '_').replace(':', '_')
-            modelfile = opt.run_root + '/' + opt.dataset_name + '_' + opt.model_name
-            opt.f = open( logfile + '.txt', 'w')
-            # opt.modelfile = open( modelfile + '.txt', 'w')
-            print(opt.dataset_name + '\t' + opt.model_name+'----train  start')
-            train()
-            print(opt.dataset_name + '\t' + opt.model_name+'----train  end')
+            os.mkdir(opt.r
             print('\n')
 
             opt.f.close()
