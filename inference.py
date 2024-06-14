@@ -11,8 +11,8 @@ from tqdm import tqdm
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 parser = argparse.ArgumentParser(description="PyTorch BasicIRSTD Inference without mask")
-#parser.add_argument("--model_names", default=['ACM', 'ALCNet','DNANet', 'ISNet', 'RDIAN', 'ISTDU-Net'], nargs='+', help="model_name: 'ACM', 'ALCNet', 'DNANet', 'ISNet', 'UIUNet', 'RDIAN', 'ISTDU-Net', 'U-Net', 'RISTDnet'")
-parser.add_argument("--model_names", default=['IS_ViMamba'], type=str,nargs="+", help="model_name: 'IS_ViMamba','SCTransNet', 'MSHNet', 'DNANet', 'ISNet', 'UIUNet', 'RDIAN', 'ISTDU-Net', 'U-Net', 'RISTDnet'")
+parser.add_argument("--model_names", default=['ACM', 'ALCNet','DNANet', 'ISNet', 'RDIAN', 'ISTDU-Net'], nargs='+',  
+                    help="model_name: 'ACM', 'ALCNet', 'DNANet', 'ISNet', 'UIUNet', 'RDIAN', 'ISTDU-Net', 'U-Net', 'RISTDnet'")
 parser.add_argument("--pth_dirs", default=None, nargs='+',  help="checkpoint dir, default=None or ['NUDT-SIRST/ACM_400.pth.tar','NUAA-SIRST/ACM_400.pth.tar']")
 parser.add_argument("--dataset_dir", default='./datasets', type=str, help="train_dataset_dir")
 parser.add_argument("--dataset_names", default=['NUAA-SIRST', 'NUDT-SIRST', 'IRSTD-1K'], nargs='+', 
@@ -36,32 +36,10 @@ if opt.img_norm_cfg_mean != None and opt.img_norm_cfg_std != None:
   opt.img_norm_cfg = dict()
   opt.img_norm_cfg['mean'] = opt.img_norm_cfg_mean
   opt.img_norm_cfg['std'] = opt.img_norm_cfg_std
-
-# 定义函数进行图像分割预测并拼接
-def predict_and_concat(net, img):
-    _, _, height, width = img.size()
-
-    m = max(height, width)
-    if m > 2048:
-
-        # 将图像从中间水平分割成左右两半
-        img_left = img[:, :, :, :width // 2]
-        img_right = img[:, :, :, width // 2:]
-
-        # 分别对左右两半进行预测
-        pred_left = net.forward(img_left.cuda())
-        pred_right = net.forward(img_right.cuda())
-
-        # 将左右两半的预测结果拼接起来
-        pred = torch.cat((pred_left, pred_right), dim=3)
-    else:
-        pred = net.forward(img.cuda())
-
-    return pred
   
 def test(): 
     test_set = InferenceSetLoader(opt.dataset_dir, opt.train_dataset_name, opt.test_dataset_name, opt.img_norm_cfg)
-    test_loader = DataLoader(dataset=test_set, num_workers=0, batch_size=1, shuffle=False)
+    test_loader = DataLoader(dataset=test_set, num_workers=1, batch_size=1, shuffle=False)
     
     net = Net(model_name=opt.model_name, mode='test').cuda()
     try:
@@ -73,10 +51,8 @@ def test():
 
     with torch.no_grad():
         for idx_iter, (img, size, img_dir) in tqdm(enumerate(test_loader)):
-            # img = Variable(img).cuda()
-            # pred = net.forward(img)
-            torch.cuda.empty_cache()
-            pred = predict_and_concat(net, img)
+            img = Variable(img).cuda()
+            pred = net.forward(img)
             pred = pred[:,:,:size[0],:size[1]]        
             ### save img
             if opt.save_img == True:
@@ -122,4 +98,3 @@ if __name__ == '__main__':
                         print('\n')
                         opt.f.write('\n')
         opt.f.close()
-        
